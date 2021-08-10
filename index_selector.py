@@ -188,6 +188,7 @@ class _ModelWrapper:
             cm.print_solution()  # Remove
             return s
 
+disable = False
 
 class _CutCallback(ConstraintCallbackMixin, UserCutCallback):
 
@@ -203,16 +204,17 @@ class _CutCallback(ConstraintCallbackMixin, UserCutCallback):
         ys = self._mw.ys
         vys = self.get_values([y.index for y in ys])
         for i, ixs in enumerate(self._mw.xs):
-            viy = vys[i]
             vixs = [self.get_values(ix.index) if ix is not None else None for ix in ixs]
             for q in range(self._mw.problem.query_count):
-                if vixs[q] is not None and vixs[q] > viy:
-                    self.add([[ixs[q]], [1]], "L", viy)
+                if vixs[q] is not None and vixs[q] > vys[i]:
+                    self.add([[ixs[q].index, ys[i].index], [1, -1]], "L", 0)
 
     def __call__(self):
         if not self.get_node_data():
             self.set_node_data(0)
-            self._add_c1()
+            if not disable:
+                self._add_c1()
+            print(self.get_num_nodes())
 
 
 def problem(unindexed_query_costs, index_query_costs, index_fixed_costs, index_sizes, max_size):
@@ -235,9 +237,8 @@ def _eb_test():
     max_size = 19
     compute(problem(unindexed_query_costs, query_costs, fixed_costs, sizes, max_size))
 
-
 def _r_test():
-    compute(random_problem(70, 70, seed=1))
+    compute(random_problem(50, 50, seed=1))
 
 
 def random_problem(index_count, query_count, size_ratio=0.5, fixed_cost_ratio=0.2, seed=0):
