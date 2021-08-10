@@ -6,6 +6,11 @@ def _ensure_non_negative(x):
         raise ValueError("Not a non-negative number")
 
 
+def _ensure_non_empty(x):
+    if len(x) == 0:
+        raise ValueError("Empty")
+
+
 def _ensure_type(x, type):
     if not isinstance(x, type):
         if not isinstance(type, tuple):
@@ -13,60 +18,27 @@ def _ensure_type(x, type):
         raise TypeError("Expected" + "or ".join(t.__name__ for t in type))
 
 
-def _makerepr(cls, *args, use_repr=True):
+def _make_repr(cls, *args, use_repr=True):
     arglist = ",".join(map(repr if use_repr else str, args))
     return f"{cls.__name__}({arglist})"
 
 
-class ListView:
-
-    @staticmethod
-    def make_safe(data, validator):
-        view = ListView.make(data)
-        for i in view:
-            validator(i)
-        return view
-
-    @staticmethod
-    def make(data):
-        if isinstance(data, ListView):
-            return data
-        if isinstance(data, tuple):
-            return ListView(data)
+def _make_tuple(data, validator=None):
+    if not isinstance(data, tuple):
         from collections.abc import Iterable
-        if isinstance(data, Iterable):
-            return ListView(tuple(data))
-        raise TypeError("Not an iterable")
-
-    @property
-    def data(self):
-        return self._data
-
-    def __init__(self, data):
-        if not isinstance(data, tuple):
-            raise TypeError("Not a tuple")
-        self._data = data
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self):
-        return len(self._data)
-
-    def __getitem__(self, index):
-        return self._data[index]
-
-    def __repr__(self):
-        return _makerepr(self.__class__, self._data)
-
-    def __str__(self):
-        return _makerepr(self.__class__, self._data, use_repr=False)
+        _ensure_type(data, Iterable)
+        data = tuple(data)
+    if validator is not None:
+        for i in data:
+            validator(i)
+    return data
 
 
 class Index:
 
     def __init__(self, fixed_cost, query_costs, size):
-        query_costs = ListView.make_safe(query_costs, _ensure_non_negative)
+        query_costs = _make_tuple(query_costs, _ensure_non_negative)
+        _ensure_non_empty(query_costs)
         _ensure_non_negative(fixed_cost)
         _ensure_non_negative(size)
         self._fixed_cost = fixed_cost
@@ -86,21 +58,30 @@ class Index:
         return self._size
 
     def __repr__(self):
-        return _makerepr(self.__class__, self._fixed_cost, self._query_costs.data, self._size)
+        return _make_repr(self.__class__, self._fixed_cost, self._query_costs, self._size)
 
     def __str__(self) -> str:
-        return _makerepr(self.__class__, self._fixed_cost, self._query_costs.data, self._size, use_repr=False)
+        return _make_repr(self.__class__, self._fixed_cost, self._query_costs, self._size, use_repr=False)
 
 
 class Model:
 
     def __init__(self, unindexed_query_costs, indices, max_size):
-        unindexed_query_costs = ListView.make_safe(unindexed_query_costs, _ensure_non_negative)
-        indices = ListView.make_safe(indices, lambda x: _ensure_type(x, Index))
+        unindexed_query_costs = _make_tuple(unindexed_query_costs, _ensure_non_negative)
+        _ensure_non_empty(unindexed_query_costs)
+        query_count = len(unindexed_query_costs)
+        indices = _make_tuple(indices, lambda x: _ensure_type(x, Index))
+        for i in indices:
+            if len(i.query_costs) != query_count:
+                raise ValueError("Query count does not match")
         _ensure_non_negative(max_size)
         self._unindexed_query_costs = unindexed_query_costs
         self._indices = indices
         self._max_size = max_size
+
+    @property
+    def query_count(self):
+        return len(self._unindexed_query_costs)
 
     @property
     def unindexed_query_costs(self):
@@ -115,10 +96,62 @@ class Model:
         return self._max_size
 
     def __repr__(self) -> str:
-        return _makerepr(self.__class__, self._unindexed_query_costs.data, self._indices.data, self.max_size)
+        return _make_repr(self.__class__, self._unindexed_query_costs, self._indices, self.max_size)
 
     def __str__(self) -> str:
-        return _makerepr(self.__class__, self._unindexed_query_costs.data, self._indices.data, self.max_size, use_repr=False)
+        return _make_repr(self.__class__, self._unindexed_query_costs, self._indices, self.max_size, use_repr=False)
+
+
+class OptimizationModel:
+
+    def __init__(self, model, prune=True):
+        _ensure_type(model, Model)
+        self._source = model
+        from docplex.mp.model import Model as CModel
+        mp = CModel("Index Selection")
+        try:
+            # Decision variables
+            ys = mp.binary_var_list(len(model.indices), name="yi")
+            uxs = mp.binary_var_list(len(model.indices), name="uxq")
+            xs = [None] * len(model.indices)
+            for ii, i in enumerate(model.indices):
+                ixs = [None] * model.query_count
+                for q, (uc, ic) in enumerate(zip(model.unindexed_query_costs, i.query_costs)):
+                    if not prune or ic < uc:
+                        ixs[q] = mp.binary_var(name=f"xiq_{ii}_{q}")
+                xs[ii] = _make_tuple(ixs)
+            # Size constraint
+            # Single index per query constraint
+            # Max index use constraint
+        except:
+            mp.end()
+        self._mp = mp
+        self._ys = _make_tuple(ys)
+        self._uxs = _make_tuple(uxs)
+        self._xs = _make_tuple(xs)
+
+    @property
+    def source(self):
+        return self._source
+
+    @property
+    def model(self):
+        return self._mp
+
+    @property
+    def xs(self):
+        return self._xs
+
+    @property
+    def uxs(self):
+        return self._uxs
+
+    def ys(self):
+        return self._ys
+
+
+def _compute_cuts(solution):
+    pass
 
 
 def _test():
@@ -133,7 +166,8 @@ def _test():
     max_size = 19
 
     model = Model(unindexed_query_costs, (Index(*a) for a in zip(fixed_costs, query_costs, sizes)), max_size)
-    print(model)
+    om = OptimizationModel(model)
+    pass
 
 
 if __name__ == "__main__":
