@@ -108,17 +108,17 @@ class OptimizationModel:
         _ensure_type(model, Model)
         self._source = model
         from docplex.mp.model import Model as CModel
-        mp = CModel("Index Selection")
+        mp = CModel(name="Index Selection")
         try:
             # Decision variables
-            ys = mp.binary_var_list(len(model.indices), name="y[i]")
-            uxs = mp.binary_var_list(len(model.indices), name="ux[q]")
+            ys = mp.binary_var_list(len(model.indices), name="y", key_format="[i=%s]")
+            uxs = mp.binary_var_list(model.query_count, name="ux", key_format="[q=%s]")
             xs = [None] * len(model.indices)
             for i, ind in enumerate(model.indices):
                 ixs = [None] * model.query_count
                 for q, (uc, ic) in enumerate(zip(model.unindexed_query_costs, ind.query_costs)):
                     if not prune or ic < uc:
-                        ixs[q] = mp.binary_var(name=f"x[i,q]_{i}_{q}")
+                        ixs[q] = mp.binary_var(name=f"x[i={i},q={q}]")
                 xs[i] = _make_tuple(ixs)
             # Size constraint
             actual_size = mp.sum(ys[i] * ind.size for i, ind in enumerate(model.indices))
@@ -133,11 +133,13 @@ class OptimizationModel:
                 actual_indices = mp.sum(indices)
                 mp.add_constraint(actual_indices <= sum(indices), ctname=f"Max uses per index {i}")
             # Target
-            fixed_cost = mp.sum(ys[i] * ind.fixed_cost for i, ind in enumerate(model.indices))
-            query_cost = mp.sum(xs[i][q] * ind.query_costs[q] for i, ind in enumerate(model.indices) + uxs[q] * model.unindexed_query_costs[q] for q in range(model.query_count) if xs[i][q] is not None)
-            mp.minimize(fixed_cost + query_cost)
+            index_fixed_cost = mp.sum(ys[i] * ind.fixed_cost for i, ind in enumerate(model.indices))
+            indexed_query_cost = mp.sum(xs[i][q] * ind.query_costs[q] for i, ind in enumerate(model.indices) for q in range(model.query_count) if xs[i][q] is not None)
+            unindexed_query_cost = mp.sum(uxs[q] * model.unindexed_query_costs[q] for q in range(model.query_count))
+            mp.minimize(index_fixed_cost + indexed_query_cost + unindexed_query_cost)
         except:
             mp.end()
+            raise
         self._mp = mp
         self._ys = _make_tuple(ys)
         self._uxs = _make_tuple(uxs)
@@ -159,6 +161,7 @@ class OptimizationModel:
     def uxs(self):
         return self._uxs
 
+    @property
     def ys(self):
         return self._ys
 
@@ -180,8 +183,10 @@ def _test():
 
     model = Model(unindexed_query_costs, (Index(*a) for a in zip(fixed_costs, query_costs, sizes)), max_size)
     om = OptimizationModel(model)
-    with om.model:
-        s = om.model.solve()
+    with om.model as cm:
+        cm.print_information()
+        s = cm.solve()
+        cm.print_solution()
     pass
 
 
