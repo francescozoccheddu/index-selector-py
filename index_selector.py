@@ -111,27 +111,27 @@ class OptimizationModel:
         mp = CModel(name="Index Selection")
         try:
             # Decision variables
-            ys = mp.binary_var_list(len(model.indices), name="y", key_format="[i=%s]")
-            uxs = mp.binary_var_list(model.query_count, name="ux", key_format="[q=%s]")
+            ys = mp.binary_var_list(len(model.indices), name="Enable index", key_format=" %s")
+            uxs = mp.binary_var_list(model.query_count, name="No index for query", key_format=" %s")
             xs = [None] * len(model.indices)
             for i, ind in enumerate(model.indices):
                 ixs = [None] * model.query_count
                 for q, (uc, ic) in enumerate(zip(model.unindexed_query_costs, ind.query_costs)):
                     if not prune or ic < uc:
-                        ixs[q] = mp.binary_var(name=f"x[i={i},q={q}]")
+                        ixs[q] = mp.binary_var(name=f"Index {i} for query {q}")
                 xs[i] = _make_tuple(ixs)
             # Size constraint
             actual_size = mp.sum(ys[i] * ind.size for i, ind in enumerate(model.indices))
-            mp.add_constraint(actual_size <= model.max_size, ctname="Size")
+            mp.add_constraint(actual_size <= model.max_size, ctname="Max size")
             # Single index per query constraint
             for q in range(model.query_count):
                 actual_indices = mp.sum(xs[i][q] for i in range(len(model.indices)) if xs[i][q] is not None) + uxs[q]
                 mp.add_constraint(actual_indices == 1, ctname=f"Single index per query {q}")
             # Max index use constraint
             for i in range(len(model.indices)):
-                indices = (xs[i][q] for q in range(model.query_count) if xs[i][q] is not None)
+                indices = [xs[i][q] for q in range(model.query_count) if xs[i][q] is not None]
                 actual_indices = mp.sum(indices)
-                mp.add_constraint(actual_indices <= sum(indices), ctname=f"Max uses per index {i}")
+                mp.add_constraint(actual_indices <= ys[i] * len(indices), ctname=f"Max uses per index {i}")
             # Target
             index_fixed_cost = mp.sum(ys[i] * ind.fixed_cost for i, ind in enumerate(model.indices))
             indexed_query_cost = mp.sum(xs[i][q] * ind.query_costs[q] for i, ind in enumerate(model.indices) for q in range(model.query_count) if xs[i][q] is not None)
@@ -182,7 +182,7 @@ def _test():
     max_size = 19
 
     model = Model(unindexed_query_costs, (Index(*a) for a in zip(fixed_costs, query_costs, sizes)), max_size)
-    om = OptimizationModel(model)
+    om = OptimizationModel(model, False)
     with om.model as cm:
         cm.print_information()
         s = cm.solve()
